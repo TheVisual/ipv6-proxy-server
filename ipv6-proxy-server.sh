@@ -268,9 +268,9 @@ function get_backconnect_ipv4(){
 function check_ipv6(){
   # Check is ipv6 enabled or not
   if test -f /proc/net/if_inet6; then
-	  echo "IPv6 interface is enabled";
+    echo "IPv6 interface is enabled";
   else
-	  log_err_and_exit "Error: inet6 (ipv6) interface is not enabled. Enable IP v6 on your system.";
+    log_err_and_exit "Error: inet6 (ipv6) interface is not enabled. Enable IP v6 on your system.";
   fi;
 
   if [[ $(ip -6 addr show scope global) ]]; then
@@ -279,15 +279,11 @@ function check_ipv6(){
     log_err_and_exit "Error: IPv6 global address is not allocated on server, allocate it or contact your VPS/VDS support.";
   fi;
 
-  local ifaces_config="/etc/network/interfaces";
-  if [ $inet6_network_interfaces_configuration_check = true ]; then
-    if [ ! -f $ifaces_config ]; then log_err_and_exit "Error: interfaces config ($ifaces_config) doesn't exist"; fi;
-    
-    if grep 'inet6' $ifaces_config > /dev/null; then
-      echo "Network interfaces for IPv6 configured correctly";
-    else
-      log_err_and_exit "Error: $ifaces_config has no inet6 (IPv6) configuration.";
-    fi;
+  # Netplan check replaced here
+  if netplan get | grep -q 'addresses:'; then
+    echo "Network interfaces for IPv6 configured correctly";
+  else
+    log_err_and_exit "Error: Netplan configuration does not include IPv6 addresses.";
   fi;
 
   if [[ $(ping6 -c 1 google.com) != *"Network is unreachable"* ]] &> /dev/null; then 
@@ -295,7 +291,6 @@ function check_ipv6(){
   else
     log_err_and_exit "Error: test ping google.com through IPv6 failed, network is unreachable.";
   fi; 
-
 }
 
 # Install required libraries
@@ -333,19 +328,45 @@ function install_3proxy(){
 }
 
 function configure_ipv6(){
-  # Enable sysctl options for rerouting and bind ips from subnet to default interface
-  required_options=("conf.$interface_name.proxy_ndp" "conf.all.proxy_ndp" "conf.default.forwarding" "conf.all.forwarding" "ip_nonlocal_bind");
-  for option in ${required_options[@]}; do
-    full_option="net.ipv6.$option=1";
-    if ! cat /etc/sysctl.conf | grep -v "#" | grep -q $full_option; then echo $full_option >> /etc/sysctl.conf; fi;
-  done;
-  sysctl -p &>> $script_log_file;
+  local netplan_config_file="/etc/netplan/01-netcfg.yaml"
 
-  if [[ $(cat /proc/sys/net/ipv6/conf/$interface_name/proxy_ndp) == 1 ]] && [[ $(cat /proc/sys/net/ipv6/ip_nonlocal_bind) == 1 ]]; then 
-    echo "IPv6 network sysctl data configured successfully";
+  # Retrieve the current IPv6 address and subnet prefix length
+  local ipv6_address=$(ip -6 addr show $interface_name | grep 'inet6' | grep 'global' | awk '{print $2}' | head -n 1)
+
+  # Retrieve the current IPv6 gateway
+  local ipv6_gateway=$(ip -6 route show default | grep 'default via' | awk '{print $3}' | head -n 1)
+
+  # Retrieve the current IPv4 address
+  local ipv4_address=$(ip -4 addr show $interface_name | grep 'inet ' | awk '{print $2}' | head -n 1)
+
+  # Create the Netplan configuration file
+  cat > $netplan_config_file <<-EOF
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    $interface_name:
+      dhcp4: no
+      dhcp6: no
+      addresses: [ "$ipv4_address", "$ipv6_address" ]
+      routes:
+        - to: "::/0"
+          via: "$ipv6_gateway"
+      nameservers:
+        addresses: [ "2001:4860:4860::8888", "2001:4860:4860::8844" ]
+EOF
+
+  # Set permissions and apply configuration
+  chmod 600 $netplan_config_file
+  apply_netplan_configuration
+}
+
+function apply_netplan_configuration() {
+  netplan apply
+  if [ $? -eq 0 ]; then
+    echo "Netplan configuration applied successfully";
   else
-    cat /etc/sysctl.conf &>> $script_log_file;
-    log_err_and_exit "Error: cannot configure IPv6 config";
+    log_err_and_exit "Error: Failed to apply Netplan configuration.";
   fi;
 }
 
@@ -410,7 +431,6 @@ function create_startup_script(){
   }
 
   # Save old 3proxy daemon pids, if exists
-  proxyserver_process_pids=()
   while read -r pid; do
     proxyserver_process_pids+=(\$pid)
   done < <(ps -ef | awk '/[3]proxy/{print $2}');
@@ -421,7 +441,7 @@ function create_startup_script(){
     then cp $random_ipv6_list_file \$old_ipv6_list_file; 
     rm $random_ipv6_list_file;
   fi; 
-
+  
   # Array with allowed symbols in hex (in ipv6 addresses)
   array=( 1 2 3 4 5 6 7 8 9 0 a b c d e f )
 
@@ -504,19 +524,19 @@ function create_startup_script(){
   ulimit -u 600000
   for ipv6_address in \$(cat ${random_ipv6_list_file}); do ip -6 addr add \$ipv6_address dev $interface_name; done;
   ${user_home_dir}/proxyserver/3proxy/bin/3proxy ${proxyserver_config_path}
-
+  
   # Kill old 3proxy daemon, if it's working
   for pid in "\${proxyserver_process_pids[@]}"; do
     kill \$pid;
   done;
-
+  
   # Remove old random ip list after running new 3proxy instance
   if test -f \$old_ipv6_list_file; then
     # Remove old ips from interface
     for ipv6_address in \$(cat \$old_ipv6_list_file); do ip -6 addr del \$ipv6_address dev $interface_name; done;
     rm \$old_ipv6_list_file; 
   fi;
-
+  
   exit 0;
 EOF
   
