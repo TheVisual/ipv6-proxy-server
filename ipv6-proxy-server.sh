@@ -409,18 +409,18 @@ function create_startup_script(){
     reference="\$(echo "\$reference" | sed 's/^[[:space:]]*//')"
   }
 
-  # Close 3proxy daemon, if it's working
-  ps -ef | awk '/[3]proxy/{print \$2}' | while read -r pid; do
-    kill \$pid
-  done
+  # Save old 3proxy daemon pids, if exists
+  proxyserver_process_pids=()
+  while read -r pid; do
+    proxyserver_process_pids+=(\$pid)
+  done < <(ps -ef | awk '/[3]proxy/{print $2}');
 
-  # Remove old random ip list before create new one
+  # Save old IPv6 addresses in temporary file to delete from interface after rotating
+  old_ipv6_list_file="$random_ipv6_list_file.old"
   if test -f $random_ipv6_list_file; 
-  then
-    # Remove old ips from interface
-    for ipv6_address in \$(cat $random_ipv6_list_file); do ip -6 addr del \$ipv6_address dev $interface_name; done;
-    rm $random_ipv6_list_file; 
-  fi;
+    then cp $random_ipv6_list_file \$old_ipv6_list_file; 
+    rm $random_ipv6_list_file;
+  fi; 
 
   # Array with allowed symbols in hex (in ipv6 addresses)
   array=( 1 2 3 4 5 6 7 8 9 0 a b c d e f )
@@ -502,9 +502,22 @@ function create_startup_script(){
   # Script that adds all random ipv6 to default interface and runs backconnect proxy server
   ulimit -n 600000
   ulimit -u 600000
-  for ipv6_address in \$(cat ${random_ipv6_list_file}); do ip -6 addr add \${ipv6_address} dev ${interface_name};done;
+  for ipv6_address in \$(cat ${random_ipv6_list_file}); do ip -6 addr add \$ipv6_address dev $interface_name; done;
   ${user_home_dir}/proxyserver/3proxy/bin/3proxy ${proxyserver_config_path}
-  exit 0
+
+  # Kill old 3proxy daemon, if it's working
+  for pid in "\${proxyserver_process_pids[@]}"; do
+    kill \$pid;
+  done;
+
+  # Remove old random ip list after running new 3proxy instance
+  if test -f \$old_ipv6_list_file; then
+    # Remove old ips from interface
+    for ipv6_address in \$(cat \$old_ipv6_list_file); do ip -6 addr del \$ipv6_address dev $interface_name; done;
+    rm \$old_ipv6_list_file; 
+  fi;
+
+  exit 0;
 EOF
   
 }
