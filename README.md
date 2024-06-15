@@ -2,8 +2,6 @@
 
 Create your own IPv6 backconnect proxy server with only one script on any Linux distribution. Any number of random IPs on the subnet, ideal for parsing and traffic arbitrage (Google/Facebook/Youtube/Instagram and many others support IPv6).
 
-Ask questions: [@just_temp](https://t.me/just_temp)
-
 ### Tutorial
 
 Assuming you already have an entire IPv6 subnet (/48 or /64) routed to your server.
